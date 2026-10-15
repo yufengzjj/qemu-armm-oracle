@@ -324,7 +324,7 @@ pub fn dll_path() -> Result<PathBuf, String> {
     match option_env!("ARMM_ORACLE_DLL_DIR") {
         Some(dir) => Ok(PathBuf::from(dir).join("armm_oracle.dll")),
         None => Err(format!(
-            "qemu-armm-oracle: oracle DLL not built: {}",
+            "oracle DLL not built: {}",
             option_env!("ARMM_ORACLE_NOT_BUILT").unwrap_or("unknown reason")
         )),
     }

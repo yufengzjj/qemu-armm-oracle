@@ -11,9 +11,12 @@
 //! `frontend/`. Configure and build output go to `OUT_DIR/build`; the DLL and
 //! the MSYS2 runtime DLLs it needs go to `OUT_DIR/dist`.
 //!
-//! Without MSYS2 (or on a non-Windows host) the DLL is not built: build.rs
-//! prints a warning and passes the reason in `ARMM_ORACLE_NOT_BUILT`, so the
-//! crate still compiles and `Oracle::new` returns that reason as an error.
+//! When something outside this crate is missing (a non-Windows host, MSYS2
+//! or its CLANG64 packages, git, or the network for the first download of
+//! QEMU and its meson subprojects) the DLL is not built: build.rs prints a
+//! warning and passes the reason in `ARMM_ORACLE_NOT_BUILT`, so the crate
+//! still compiles and `Oracle::new` returns that reason as an error. Errors
+//! from configure or the build itself still fail the build.
 //!
 //! Environment:
 //!   MSYS2_ROOT            MSYS2 install directory (default C:\msys64)
@@ -61,22 +64,29 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MSYS2_ROOT");
     println!("cargo:rerun-if-env-changed=ARMM_ORACLE_QEMU_DIR");
 
+    match build(&manifest) {
+        Ok(dist) => println!("cargo:rustc-env=ARMM_ORACLE_DLL_DIR={}", dist.display()),
+        Err(s) => skip(&s),
+    }
+}
+
+fn build(manifest: &Path) -> Result<PathBuf, Skip> {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     if !cfg!(windows) || target_os != "windows" {
-        skip("the oracle is only built on Windows hosts so far", &[]);
-        return;
+        return Err(Skip::new("the oracle is only built on Windows hosts so far"));
     }
 
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let Some(msys) = find_msys2() else { return };
-    let qemu = qemu_source(&manifest, &out);
+    let msys = find_msys2()?;
+    find_git()?;
+    let qemu = qemu_source(manifest, &out)?;
     let tools = ToolEnv::new(&msys, &out);
 
     let src = out.join("qemu-src");
     let build = out.join("build");
     let dist = out.join("dist");
-    make_source_tree(&manifest, &qemu, &src, &out);
-    configure(&msys, &tools, &src, &build, &out);
+    make_source_tree(manifest, &qemu, &src, &out);
+    configure(&msys, &tools, &src, &build, &out)?;
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "0".into());
     run(
         Command::new(msys.join("clang64/bin/ninja.exe"))
@@ -88,15 +98,44 @@ fn main() {
         &out,
     );
     stage_dist(&msys, &tools, &build.join("oracle/armm_oracle.dll"), &dist, &out);
-    println!("cargo:rustc-env=ARMM_ORACLE_DLL_DIR={}", dist.display());
+    Ok(dist)
 }
 
-fn skip(reason: &str, hints: &[&str]) {
-    println!("cargo:warning=qemu-armm-oracle: {reason}; the oracle DLL is not built and Oracle::new will return an error");
-    for hint in hints {
-        println!("cargo:warning=qemu-armm-oracle: {hint}");
+/// Why the DLL is not built. `reason` must be one line: it becomes
+/// `ARMM_ORACLE_NOT_BUILT`; `hints` are only printed as warnings.
+struct Skip {
+    reason: String,
+    hints: Vec<String>,
+}
+
+impl Skip {
+    fn new(reason: impl Into<String>) -> Skip {
+        Skip { reason: reason.into(), hints: Vec::new() }
     }
-    println!("cargo:rustc-env=ARMM_ORACLE_NOT_BUILT={reason}");
+
+    fn hint(mut self, hint: impl Into<String>) -> Skip {
+        self.hints.push(hint.into());
+        self
+    }
+}
+
+fn skip(s: &Skip) {
+    println!("cargo:warning={}; the oracle DLL is not built and Oracle::new will return an error", s.reason);
+    for line in s.hints.iter().flat_map(|h| h.lines()).filter(|l| !l.trim().is_empty()) {
+        println!("cargo:warning={line}");
+    }
+    println!("cargo:rustc-env=ARMM_ORACLE_NOT_BUILT={}", s.reason);
+}
+
+fn find_git() -> Result<(), Skip> {
+    match Command::new("git").arg("--version").output() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            println!("cargo:rerun-if-env-changed=PATH");
+            Err(Skip::new(format!("cannot run git ({e})"))
+                .hint("install Git for Windows and put git on PATH"))
+        }
+    }
 }
 
 fn fail(msg: &str) -> ! {
@@ -119,13 +158,13 @@ fn submodule_head(qemu: &Path) -> Option<PathBuf> {
 /// `$ARMM_ORACLE_QEMU_DIR`, else the checked-out submodule, else the
 /// submodule's commit fetched into OUT_DIR. Cargo does not check the
 /// submodule out for git dependencies (`update = none` in .gitmodules).
-fn qemu_source(manifest: &Path, out: &Path) -> PathBuf {
+fn qemu_source(manifest: &Path, out: &Path) -> Result<PathBuf, Skip> {
     if let Some(dir) = env::var_os("ARMM_ORACLE_QEMU_DIR") {
         let dir = PathBuf::from(dir);
         if !dir.join("configure").is_file() {
             fail(&format!("ARMM_ORACLE_QEMU_DIR={} is not a QEMU source tree", dir.display()));
         }
-        return dir;
+        return Ok(dir);
     }
     let sub = manifest.join("qemu");
     if sub.join("configure").is_file() {
@@ -139,7 +178,7 @@ fn qemu_source(manifest: &Path, out: &Path) -> PathBuf {
                 sub.join("configure").display()
             ));
         }
-        return sub;
+        return Ok(sub);
     }
 
     let git = |args: &[&str]| -> String {
@@ -168,7 +207,7 @@ fn qemu_source(manifest: &Path, out: &Path) -> PathBuf {
     let dir = out.join("qemu-upstream");
     let stamp = out.join("qemu-upstream.commit");
     if dir.join("configure").is_file() && fs::read_to_string(&stamp).ok().as_deref() == Some(&commit) {
-        return dir;
+        return Ok(dir);
     }
     let tmp = out.join("qemu-upstream.tmp");
     for d in [&dir, &tmp] {
@@ -186,50 +225,47 @@ fn qemu_source(manifest: &Path, out: &Path) -> PathBuf {
     for args in steps {
         let o = Command::new("git").current_dir(&tmp).args(args).output().unwrap();
         if !o.status.success() {
-            fail(&format!(
-                "fetching QEMU {commit} from {url} failed (git {}):\n{}\
-                 Check the network, or set ARMM_ORACLE_QEMU_DIR to a QEMU checkout of that commit.",
-                args.join(" "),
-                String::from_utf8_lossy(&o.stderr)
-            ));
+            // A missing file makes cargo rerun build.rs on every build until the fetch works.
+            println!("cargo:rerun-if-changed={}", dir.join("configure").display());
+            return Err(Skip::new(format!("fetching QEMU {commit} from {url} failed (git {})", args[0]))
+                .hint(String::from_utf8_lossy(&o.stderr))
+                .hint("check the network, or set ARMM_ORACLE_QEMU_DIR to a QEMU checkout of that commit"));
         }
     }
     fs::rename(&tmp, &dir).unwrap();
     fs::write(&stamp, &commit).unwrap();
-    dir
+    Ok(dir)
 }
 
-/// None (after a warning) when MSYS2 itself is absent; an MSYS2 install
-/// that lacks packages is an error, since someone is setting it up.
-fn find_msys2() -> Option<PathBuf> {
+fn find_msys2() -> Result<PathBuf, Skip> {
     let root = env::var_os("MSYS2_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\msys64"));
     let mut all: Vec<&str> = PACKAGES.iter().map(|p| p.1).collect();
     all.dedup();
     if !root.join("usr/bin/sh.exe").is_file() {
-        skip(
-            &format!("MSYS2 not found at {} (set MSYS2_ROOT to its install directory)", root.display()),
-            &[
-                "to build the oracle, install MSYS2 from https://www.msys2.org/, then in an MSYS2 shell run:",
-                &format!("pacman -S --needed {}", all.join(" ")),
-            ],
-        );
-        return None;
+        return Err(Skip::new(format!(
+            "MSYS2 not found at {} (set MSYS2_ROOT to its install directory)",
+            root.display()
+        ))
+        .hint("to build the oracle, install MSYS2 from https://www.msys2.org/, then in an MSYS2 shell run:")
+        .hint(format!("pacman -S --needed {}", all.join(" "))));
     }
     let mut missing: Vec<&str> =
         PACKAGES.iter().filter(|(file, _)| !root.join(file).is_file()).map(|p| p.1).collect();
     missing.dedup();
     if !missing.is_empty() {
-        fail(&format!(
-            "MSYS2 at {} is missing CLANG64 packages needed to build the oracle: {}.\n\
-             In an MSYS2 shell run:\n    pacman -S --needed {}",
+        // pacman's database of installed packages, so installing them reruns build.rs.
+        println!("cargo:rerun-if-changed={}", root.join("var/lib/pacman/local").display());
+        return Err(Skip::new(format!(
+            "MSYS2 at {} is missing CLANG64 packages: {}",
             root.display(),
-            missing.join(", "),
-            all.join(" ")
-        ));
+            missing.join(", ")
+        ))
+        .hint("in an MSYS2 shell run:")
+        .hint(format!("pacman -S --needed {}", all.join(" "))));
     }
-    Some(root)
+    Ok(root)
 }
 
 /// Environment for MSYS2 tools: CLANG64 first on PATH, and nothing of
@@ -260,6 +296,11 @@ impl ToolEnv {
 }
 
 fn run(cmd: &mut Command, tools: &ToolEnv, what: &str, out: &Path) -> String {
+    try_run(cmd, tools, what, out).unwrap_or_else(|(_, msg)| fail(&msg))
+}
+
+/// The tool's output, or on failure its output and an error message.
+fn try_run(cmd: &mut Command, tools: &ToolEnv, what: &str, out: &Path) -> Result<String, (String, String)> {
     cmd.env_clear().envs(tools.0.iter().map(|(k, v)| (k, v)));
     let output = cmd
         .output()
@@ -275,13 +316,10 @@ fn run(cmd: &mut Command, tools: &ToolEnv, what: &str, out: &Path) -> String {
     if !output.status.success() {
         let lines: Vec<&str> = text.lines().collect();
         let tail = lines[lines.len().saturating_sub(60)..].join("\n");
-        fail(&format!(
-            "{what} failed ({}). Full log: {}\n...\n{tail}",
-            output.status,
-            log.display()
-        ));
+        let msg = format!("{what} failed ({}). Full log: {}\n...\n{tail}", output.status, log.display());
+        return Err((text, msg));
     }
-    text
+    Ok(text)
 }
 
 fn slash(p: &Path) -> String {
@@ -449,17 +487,18 @@ fn apply_patches(manifest: &Path, qemu: &Path, out: &Path) -> Vec<(PathBuf, Vec<
     }).collect()
 }
 
-fn configure(msys: &Path, tools: &ToolEnv, src: &Path, build: &Path, out: &Path) {
+fn configure(msys: &Path, tools: &ToolEnv, src: &Path, build: &Path, out: &Path) -> Result<(), Skip> {
     let stamp = build.join("armm-oracle-configure");
     let want = format!("{}\n{}\n", slash(src), CONFIGURE_ARGS.join(" "));
     if build.join("build.ninja").is_file() && fs::read_to_string(&stamp).ok().as_deref() == Some(&want) {
-        return;
+        return Ok(());
     }
     if build.exists() {
         fs::remove_dir_all(build).unwrap();
     }
     fs::create_dir_all(build).unwrap();
-    run(
+    remove_partial_subprojects(&src.join("subprojects"));
+    let result = try_run(
         Command::new(msys.join("usr/bin/sh.exe"))
             .arg(slash(&src.join("configure")))
             .args(CONFIGURE_ARGS)
@@ -468,7 +507,39 @@ fn configure(msys: &Path, tools: &ToolEnv, src: &Path, build: &Path, out: &Path)
         "configure",
         out,
     );
+    if let Err((text, msg)) = result {
+        // Meson's messages when a wrap subproject cannot be downloaded.
+        const DOWNLOAD_ERRORS: &[&str] =
+            &["Git command failed", "is the internet available?", "WrapDB connection failed"];
+        let Some(line) = text.lines().find(|l| DOWNLOAD_ERRORS.iter().any(|e| l.contains(e))) else {
+            fail(&msg);
+        };
+        // A missing file makes cargo rerun build.rs on every build until configure works.
+        println!("cargo:rerun-if-changed={}", stamp.display());
+        return Err(Skip::new("downloading QEMU's meson subprojects failed")
+            .hint(line.trim())
+            .hint(format!("full log: {}", out.join("logs/configure.log").display()))
+            .hint("check the network"));
+    }
     fs::write(&stamp, want).unwrap();
+    Ok(())
+}
+
+/// Meson leaves a subproject directory holding only `.git` when its
+/// download fails, and then refuses to use or download it again.
+fn remove_partial_subprojects(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.map(Result::unwrap) {
+        let path = entry.path();
+        // is_dir() is false for junctions, which point into the QEMU sources.
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let names: Vec<OsString> = fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name()).collect();
+        if names == [OsString::from(".git")] {
+            fs::remove_dir_all(&path).unwrap();
+        }
+    }
 }
 
 /// Copy the DLL and every DLL it loads from MSYS2's clang64/bin into `dist`.

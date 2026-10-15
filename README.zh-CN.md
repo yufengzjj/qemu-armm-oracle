@@ -91,7 +91,7 @@ movs(&mut o);
 
 `cargo build` / `cargo test` 时 `build.rs` 从源码编出 DLL（首次约 50 秒，改前端后约 1–2 秒），放在 `OUT_DIR/dist`，连同它要的 5 个运行库；加载时不查 PATH。`build.rs` 不改 crate 目录里的任何文件。
 
-没装 MSYS2 时不算构建失败：只出警告，DLL 不编，`Oracle::new` 返回错误。非 Windows 宿主机也是这样。用它的测试看到这个错误应当跳过。
+缺少前提条件时不算构建失败：只出警告，DLL 不编，`Oracle::new` 返回带原因的错误。包括：非 Windows 宿主机、没装 MSYS2、缺 CLANG64 的包、PATH 上没有 git、首次下载 QEMU 或 meson 子项目时没网。用它的测试看到这个错误应当跳过。条件补齐后，下次构建会重试；只有新装 MSYS2 本身之后要运行一次 `cargo clean -p qemu-armm-oracle`（或者设 `MSYS2_ROOT`）。configure 或编译本身出错仍然算构建失败。
 
 环境变量：
 

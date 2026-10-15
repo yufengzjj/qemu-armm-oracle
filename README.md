@@ -91,7 +91,7 @@ Requirements:
 
 On `cargo build` / `cargo test`, `build.rs` builds the DLL from source (about 50 s the first time, about 1–2 s after a frontend change) into `OUT_DIR/dist`, together with the 5 runtime DLLs it needs. Loading never searches PATH. `build.rs` does not modify any file in the crate directory.
 
-Without MSYS2 the build does not fail: it only prints a warning, the DLL is not built, and `Oracle::new` returns an error. The same happens on non-Windows hosts. Tests that use the oracle should skip when they see this error.
+When a prerequisite is missing, the build does not fail: it only prints a warning, the DLL is not built, and `Oracle::new` returns an error that gives the reason. This covers a non-Windows host, no MSYS2, missing CLANG64 packages, no git on PATH, and no network for the first download of QEMU or its meson subprojects. Tests that use the oracle should skip when they see this error. Once the prerequisite is fixed, the next build tries again; only after installing MSYS2 itself, run `cargo clean -p qemu-armm-oracle` once (or set `MSYS2_ROOT`). Errors from configure or the compile itself still fail the build.
 
 Environment variables:
 
