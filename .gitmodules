@@ -1,0 +1,6 @@
+# update = none keeps cargo from cloning QEMU and its nested submodules for git
+# dependents; build.rs fetches just this commit. Check out with --checkout.
+[submodule "qemu"]
+	path = qemu
+	url = https://gitlab.com/qemu-project/qemu.git
+	update = none

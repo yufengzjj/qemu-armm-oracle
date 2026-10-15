@@ -1,0 +1,16 @@
+diff --git a/meson.build b/meson.build
+index 255c887e8e..1a3dd80ade 100644
+--- a/meson.build
++++ b/meson.build
+@@ -4518,6 +4518,11 @@ foreach target : target_dirs
+   endforeach
+ endforeach
+ 
++# qemu-armm-oracle: 'oracle' links to the project's frontend/ directory
++if fs.is_dir('oracle')
++  subdir('oracle')
++endif
++
+ # Other build targets
+ 
+ multi_target_objects = []

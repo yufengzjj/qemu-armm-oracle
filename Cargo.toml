@@ -1,0 +1,11 @@
+[package]
+name = "qemu-armm-oracle"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "In-process Armv8.1-M instruction oracle built from QEMU (spike)"
+publish = false
+# One copy per build graph: the DLL holds QEMU's process-wide state.
+links = "armm_oracle"
+
+[dependencies]
