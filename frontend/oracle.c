@@ -655,7 +655,6 @@ int armm_set_exclusive(armm_oracle *o, uint32_t addr, unsigned size)
     if (ret != ARMM_OK) {
         return ret;
     }
-    /* gen_store_exclusive compares memory with the zero-extended loaded value. */
     env->exclusive_addr = addr;
     env->exclusive_val = ldl_le_p(bytes);
     return ARMM_OK;

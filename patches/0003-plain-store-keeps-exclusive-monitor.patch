@@ -1,0 +1,107 @@
+diff --git a/linux-user/arm/cpu_loop.c b/linux-user/arm/cpu_loop.c
+index 262ab5cc41..e59af5a432 100644
+--- a/linux-user/arm/cpu_loop.c
++++ b/linux-user/arm/cpu_loop.c
+@@ -313,6 +313,8 @@ void cpu_loop(CPUARMState *env)
+         case EXCP_SWI:
+             {
+                 env->eabi = true;
++                /* The kernel's return to user space clears the monitor. */
++                env->exclusive_addr = -1;
+                 /* system call */
+                 if (env->thumb) {
+                     /* Thumb is always EABI style with syscall number in r7 */
+diff --git a/linux-user/arm/signal.c b/linux-user/arm/signal.c
+index 3b387cd6d7..bc34448753 100644
+--- a/linux-user/arm/signal.c
++++ b/linux-user/arm/signal.c
+@@ -224,6 +224,8 @@ setup_return(CPUARMState *env, struct target_sigaction *ka, int usig,
+         }
+     }
+ 
++    /* Entering the handler is a return to user space: clear the monitor. */
++    env->exclusive_addr = -1;
+     env->regs[0] = usig;
+     if (is_fdpic) {
+         env->regs[9] = handler_fdpic_GOT;
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 02693d6271..8f7f465834 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -2030,11 +2030,13 @@ static void gen_logicq_cc(TCGv_i32 lo, TCGv_i32 hi)
+ }
+ 
+ /* Load/Store exclusive instructions are implemented by remembering
+-   the value/address loaded, and seeing if these are the same
+-   when the store is performed.  This should be sufficient to implement
+-   the architecturally mandated semantics, and avoids having to monitor
+-   regular stores.  The compare vs the remembered value is done during
+-   the cmpxchg operation, but we must compare the addresses manually.  */
++   the value/address loaded, and comparing the address when the store
++   is performed.  Regular stores are not monitored.  When no other vCPU
++   or thread can write memory, the store succeeds whenever the address
++   matches, so a regular store by the same CPU does not clear the local
++   monitor (IMPLEMENTATION DEFINED).  Otherwise the cmpxchg also checks
++   that memory still holds the value loaded, in place of a global
++   monitor.  */
+ static void gen_load_exclusive(DisasContext *s, int rt, int rt2,
+                                TCGv_i32 addr, int size)
+ {
+@@ -2088,8 +2090,16 @@ static void gen_store_exclusive(DisasContext *s, int rd, int rt, int rt2,
+     TCGLabel *done_label;
+     TCGLabel *fail_label;
+     MemOp opc = size | MO_ALIGN | s->be_data;
++#ifdef CONFIG_USER_ONLY
++    /* cpu_exec_step_atomic() clears CF_PARALLEL but other threads exist. */
++    bool check_value = tb_cflags(s->base.tb) & (CF_PARALLEL | CF_STEP_ATOMIC);
++#else
++    /* Round-robin TCG runs several vCPUs without CF_PARALLEL. */
++    bool check_value = true;
++#endif
+ 
+-    /* if (env->exclusive_addr == addr && env->exclusive_val == [addr]) {
++    /* if (env->exclusive_addr == addr &&
++           (!check_value || env->exclusive_val == [addr])) {
+          [addr] = {Rt};
+          {Rd} = 0;
+        } else {
+@@ -2120,7 +2130,6 @@ static void gen_store_exclusive(DisasContext *s, int rd, int rt, int rt2,
+     t0 = tcg_temp_new_i32();
+     t1 = load_reg(s, rt);
+     if (size == 3) {
+-        TCGv_i64 o64 = tcg_temp_new_i64();
+         TCGv_i64 n64 = tcg_temp_new_i64();
+ 
+         t2 = load_reg(s, rt2);
+@@ -2140,16 +2149,26 @@ static void gen_store_exclusive(DisasContext *s, int rd, int rt, int rt2,
+             tcg_gen_concat_i32_i64(n64, t1, t2);
+         }
+ 
+-        tcg_gen_atomic_cmpxchg_i64(o64, taddr, cpu_exclusive_val, n64,
+-                                   get_mem_index(s), opc);
++        if (check_value) {
++            TCGv_i64 o64 = tcg_temp_new_i64();
+ 
+-        tcg_gen_setcond_i64(TCG_COND_NE, o64, o64, cpu_exclusive_val);
+-        tcg_gen_extrl_i64_i32(t0, o64);
+-    } else {
++            tcg_gen_atomic_cmpxchg_i64(o64, taddr, cpu_exclusive_val, n64,
++                                       get_mem_index(s), opc);
++
++            tcg_gen_setcond_i64(TCG_COND_NE, o64, o64, cpu_exclusive_val);
++            tcg_gen_extrl_i64_i32(t0, o64);
++        } else {
++            tcg_gen_qemu_st_i64(n64, taddr, get_mem_index(s), opc);
++            tcg_gen_movi_i32(t0, 0);
++        }
++    } else if (check_value) {
+         t2 = tcg_temp_new_i32();
+         tcg_gen_extrl_i64_i32(t2, cpu_exclusive_val);
+         tcg_gen_atomic_cmpxchg_i32(t0, taddr, t2, t1, get_mem_index(s), opc);
+         tcg_gen_setcond_i32(TCG_COND_NE, t0, t0, t2);
++    } else {
++        tcg_gen_qemu_st_i32(t1, taddr, get_mem_index(s), opc);
++        tcg_gen_movi_i32(t0, 0);
+     }
+     tcg_gen_mov_i32(cpu_R[rd], t0);
+     tcg_gen_br(done_label);

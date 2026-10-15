@@ -129,8 +129,9 @@ ARMM_API int armm_set_control(armm_oracle *o, uint32_t v);
  * Local exclusive monitor. armm_get_exclusive returns 1 and stores the
  * marked address if the monitor is open, 0 if it is closed.
  * armm_set_exclusive with size 0 closes it; size 1, 2 or 4 opens it for
- * addr as LDREXB/LDREXH/LDREX would, taking the current memory contents
- * (QEMU's STREX succeeds only if memory still holds that value).
+ * addr as LDREXB/LDREXH/LDREX would (addr must be mapped). A STREX to the
+ * marked address then succeeds whatever memory holds: plain stores do not
+ * change the monitor, so it may be set before or after writing memory.
  */
 ARMM_API int armm_get_exclusive(armm_oracle *o, uint32_t *addr);
 ARMM_API int armm_set_exclusive(armm_oracle *o, uint32_t addr, unsigned size);

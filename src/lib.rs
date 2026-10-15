@@ -235,7 +235,8 @@ pub trait ArmMOracle {
     fn get_control(&self) -> u32;
 
     /// Open the local exclusive monitor as an LDREX of `size` bytes (1, 2 or
-    /// 4) at `addr` would, or close it with `None`.
+    /// 4) at `addr` would, or close it with `None`. Memory contents do not
+    /// matter: a STREX to the marked address succeeds.
     fn set_exclusive(&mut self, mark: Option<(u32, u32)>);
     /// Address marked by the monitor, or `None` when it is closed.
     fn get_exclusive(&self) -> Option<u32>;
@@ -575,7 +576,8 @@ impl Oracle {
     }
 
     /// Open the monitor for an access of `size` bytes (1, 2 or 4) at
-    /// `addr` as LDREX would, or close it with `None`.
+    /// `addr` as LDREX would, or close it with `None`. `addr` must be
+    /// mapped; what memory holds there does not affect a later STREX.
     pub fn set_exclusive(&mut self, mark: Option<(u32, u32)>) -> Result<(), String> {
         let (addr, size) = mark.unwrap_or((0, 0));
         check(self.api, unsafe { (self.api.set_exclusive)(self.h, addr, size) }, "set_exclusive")

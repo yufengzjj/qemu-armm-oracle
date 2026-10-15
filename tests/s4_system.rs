@@ -204,7 +204,7 @@ fn exclusive_monitor() {
     o.set_exclusive(None).unwrap();
     assert_eq!(strex_once(o), 1);
 
-    // Byte and halfword forms; the marked size must match for QEMU.
+    // Byte and halfword forms
     o.set_exclusive(Some((a, 1))).unwrap();
     o.set_r(3, 0xab);
     run1(o, &[0xe8c1, 0x3f42]); // strexb r2, r3, [r1]
@@ -226,7 +226,7 @@ fn exclusive_monitor() {
 }
 
 #[test]
-fn exclusive_monitor_qemu_limits() {
+fn exclusive_monitor_plain_store_and_alignment() {
     let mut f = fixture();
     let o = setup(&mut f);
     let a = DATA + 0x10;
@@ -234,19 +234,21 @@ fn exclusive_monitor_qemu_limits() {
     o.set_r(1, a);
     o.set_r(3, 0x2222_2222);
 
-    // QEMU checks the marked value, not whether a store happened: a plain
-    // store of a different value makes STREX fail, of the same value not.
-    for (stored, result) in [(0x5555_5555u32, 1u32), (0x1111_1111, 0)] {
+    // A plain store by the same core leaves the local monitor as it is
+    // (IMPLEMENTATION DEFINED, B9.2; Cortex-M55 does the same), whatever
+    // value it writes; more cases in s4_exclusive.rs.
+    for stored in [0x5555_5555u32, 0x1111_1111] {
         write32s(o, a, &[0x1111_1111]);
         run1(o, &[0xe851, 0x0f00]); // ldrex r0, [r1]
         o.set_r(4, stored);
         run1(o, &[0x600c]); // str r4, [r1]
         run1(o, &strex);
-        assert_eq!(o.get_r(2), result, "plain store of {stored:#x} in between");
+        assert_eq!(o.get_r(2), 0, "plain store of {stored:#x} in between");
+        assert_eq!(read32(o, a), 0x2222_2222, "plain store of {stored:#x} in between");
     }
 
     // An unaligned STREX is an UNALIGNED UsageFault whatever the monitor
-    // state (ExclusiveMonitorsPass); more cases in s4_strex_align.rs.
+    // state (ExclusiveMonitorsPass); more cases in s4_exclusive.rs.
     o.set_r(1, DATA + 0x12);
     o.set_r(2, 0xdead);
     o.write_mem(CODE, &thumb(&strex)).unwrap();

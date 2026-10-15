@@ -44,11 +44,12 @@ for p in "$root"/patches/*.patch; do
     if git -C "$qemu" apply --reverse --check -C2 "$p" 2>/dev/null; then
         echo "already applied: $name"
     else
-        # --3way merges through upstream context drift. It compares the
-        # index stat data with the files (refresh it: Git for Windows and
-        # MSYS2's git record it differently) and stages the result, so
-        # unstage to keep the index at HEAD for --reset.
-        git -C "$qemu" update-index -q --refresh || true
+        # --3way merges through upstream context drift. It needs the index
+        # to match the files (earlier patches leave them modified, and Git
+        # for Windows and MSYS2's git record stat data differently), so
+        # stage them first; it stages the result, so unstage afterwards to
+        # keep the index at HEAD for --reset.
+        git -C "$qemu" add -u
         git -C "$qemu" apply --3way "$p"
         git -C "$qemu" reset -q
         echo "applied: $name"
