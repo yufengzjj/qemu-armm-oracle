@@ -3,6 +3,7 @@
 python scripts/s5_compare/run.py --count 10000 --seed 1
 python scripts/s5_compare/run.py --seed 1 --only 123 -v        # rerun and print one case
 python scripts/s5_compare/run.py --qemu installed --count 2000  # QEMU 9.2.50 in C:\\Program Files\\qemu
+python scripts/s5_compare/run.py --qemu patched --secure --templates sys --count 3000  # system/security insns
 """
 import argparse
 import collections
@@ -25,6 +26,7 @@ from sysqemu import CONTROL_FPCA, CONTROL_NPRIV, SysQemu, diff_runs  # noqa: E40
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 QEMUS = {
     "same": (os.path.join(ROOT, "build", "qemu-system-win", "qemu-system-arm.exe"), r"C:\msys64\clang64\bin"),
+    "patched": (os.path.join(ROOT, "build", "qemu-system-patched", "qemu-system-arm.exe"), r"C:\msys64\clang64\bin"),
     "installed": (r"C:\Program Files\qemu\qemu-system-arm.exe", None),
 }
 CLREX = bytes.fromhex("bff32f8f")
@@ -241,17 +243,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=10000)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--qemu", default="same", help="'same' (build/qemu-system-win), 'installed', or a path")
+    ap.add_argument("--qemu", default="same",
+                    help="'same' (build/qemu-system-win), 'patched' (build/qemu-system-patched, patches applied), "
+                         "'installed', or a path")
     ap.add_argument("--privileged", action="store_true", help="run the system side privileged (default: nPRIV=1)")
     ap.add_argument("--secure", action="store_true", help="run the system side in Secure state (default: Non-secure)")
     ap.add_argument("--only", type=int, nargs="*", help="run only these case ids")
+    ap.add_argument("--templates", nargs="*", help="generate cases from these templates only (e.g. sys)")
     ap.add_argument("--out", default=os.path.join(ROOT, "build", "s5"))
     ap.add_argument("--dll", default=None, help="armm_oracle.dll to load (default: copy of build/oracle-win/dist)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     t_gen = time.perf_counter()
-    cases = generate(args.count if not args.only else max(args.only) + 1, args.seed)
+    cases = generate(args.count if not args.only else max(args.only) + 1, args.seed, templates=args.templates)
     t_gen = time.perf_counter() - t_gen
     if args.only:
         cases = [cases[i] for i in args.only]
@@ -266,7 +271,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     qname = args.qemu if args.qemu in QEMUS else os.path.basename(os.path.dirname(exe))
     tag = (f"seed{args.seed}-n{len(cases)}-{qname}-{'s' if args.secure else 'ns'}"
-           f"{'-priv' if args.privileged else ''}")
+           f"{'-priv' if args.privileged else ''}{'-' + '+'.join(args.templates) if args.templates else ''}")
     out_diffs = open(os.path.join(args.out, f"diffs-{tag}.txt"), "w")
 
     stats = collections.Counter()
@@ -312,7 +317,7 @@ def main():
             per_cat[case["cat"]]["same"] += 1
             stats["same"] += 1
             continue
-        cause = classify(case, o, s, sn, diffs, args.privileged, args.secure, args.qemu != "same")
+        cause = classify(case, o, s, sn, diffs, args.privileged, args.secure, args.qemu not in ("same", "patched"))
         causes[cause].append((case, diffs, o, s))
         per_cat[case["cat"]]["differ"] += 1
         stats["differ"] += 1

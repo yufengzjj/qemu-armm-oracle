@@ -24,13 +24,14 @@ Status: verified (see [Verification](#verification)). Only Windows hosts are sup
 
 ## How it works
 
-- QEMU is a git submodule (`qemu/`, pinned at `8ee6c77`, 11.1.50). Apart from the three small patches in `patches/`, its **sources are not changed**; this project only adds files.
+- QEMU is a git submodule (`qemu/`, pinned at `8ee6c77`, 11.1.50). Apart from the four small patches in `patches/`, its **sources are not changed**; this project only adds files.
 - `frontend/` is a new frontend modelled on QEMU's linux-user (user mode), but without syscalls, ELF loading or signals. It builds `target/arm`, TCG and the user-mode part of `accel/tcg` into one DLL, with the CPU model `cortex-m55`.
 - Guest memory is a flat 4 GB address window; pages are mapped as each test case needs them. Accesses to unmapped pages are caught by a Windows vectored exception handler (VEH) and turned into guest data aborts; the process does not crash.
 - The changes to upstream are the patches in `patches/`, applied in order:
   - `0001`: 5 lines added to `meson.build` to hook `frontend/` into QEMU's build.
   - `0002`: a fix in `target/arm/tcg/translate.c` so that an unaligned STREX always raises an alignment fault (the first of the [known QEMU issues](#known-qemu-issues)).
   - `0003`: a fix in the same function so that a plain store does not change the exclusive monitor (the second of the known QEMU issues), plus two lines in `linux-user/arm/` that the oracle does not build.
+  - `0004`: one line in `target/arm/tcg/translate-m-nocp.c` so that a Secure VSCCLRM whose D-register list starts at D17 or above clears only VPR instead of hitting an assertion (the third of the known QEMU issues). It only changes system mode; the oracle is Non-secure, where VSCCLRM is UNDEFINED.
 - `include/armm_oracle.h` is the C API. `src/lib.rs` is the Rust wrapper (`ArmMOracle` trait, `Oracle`, `StepOutcome`, `FaultKind`, `CpuState`).
 
 ## Semantic contract
@@ -68,7 +69,7 @@ The raw step result (`step_raw`) still carries QEMU's FSR value, which tells unm
 
 - Fixed here by `patches/0002-unaligned-strex-fault.patch`: in upstream QEMU, an unaligned STREX/STREXH (and STLEX/STLEXH) does not raise an alignment fault when the exclusive monitor does not match the address; it just returns 1 (store failed). The architecture requires an UNALIGNED UsageFault (`ExclusiveMonitorsPass` checks alignment first). Cause: `gen_store_exclusive` in `target/arm/tcg/translate.c`, so upstream system mode and linux-user have the same bug. The patch checks the alignment before the monitor and raises the fault as a store; `tests/s4_exclusive.rs` covers it.
 - Fixed here by `patches/0003-plain-store-keeps-exclusive-monitor.patch`: in upstream QEMU, STREX success is decided by comparing memory with the value LDREX read, so a plain store of a different value between LDREX and STREX makes it fail and the same value lets it succeed. The architecture makes it IMPLEMENTATION DEFINED whether a store by the same core that is not a Store-Exclusive changes the local monitor (DDI0553 B9.2), but a real implementation does not decide by data. Cortex-M55 leaves the monitor unchanged (Cortex-M55 TRM, "Internal local exclusive access monitor"). The patch makes QEMU do the same: **a normal store by the same core does not change the local monitor**, and a STREX to the marked address stores and returns 0. This applies to user mode when only one thread runs (code translated without `CF_PARALLEL`), which is always the case for the oracle. With several threads, and always in system mode (round-robin TCG runs several vCPUs in one thread), QEMU keeps the compare, which stands in for the global monitor; so `qemu-system-arm` still behaves the old way. For linux-user the patch also clears the monitor on syscalls and on signal delivery, as Linux does on every return to user space. `tests/s4_exclusive.rs` covers it; a memory fault in a STREX is now also reported as a store.
-- System mode only: a Secure VSCCLRM whose D-register list starts at D17 or above hits an assertion in `trans_VSCCLRM` (`target/arm/tcg/translate-m-nocp.c`) and QEMU exits. The oracle is Non-secure, so VSCCLRM is UNDEFINED before that code runs.
+- Fixed here by `patches/0004-vscclrm-unimplemented-dregs.patch` (system mode only): in upstream QEMU, a Secure VSCCLRM whose D-register list starts at D17 or above (for example `vscclrm {d17, vpr}`) hits an assertion in `trans_VSCCLRM` (`target/arm/tcg/translate-m-nocp.c`) and QEMU exits. The architecture leaves registers above D15 alone on a PE with 16 D registers (the VSCCLRM operation skips them, and DDI0553 B4.3 says VSCCLRM acts as a NOP for unimplemented S or D registers), so such a list clears only VPR. The patch does that. The oracle is Non-secure, where VSCCLRM is UNDEFINED before that code runs, so the oracle's results do not change; `scripts/s5_compare/vscclrm_check.py` checks the fix in Secure state on a patched `qemu-system-arm`.
 
 ## Verification
 
@@ -120,19 +121,19 @@ qemu-armm-oracle = { git = "https://github.com/yufengzjj/qemu-armm-oracle.git" }
 
 ## Following upstream QEMU
 
-Move the submodule to the new commit and run the full `cargo test` (a successful build is not enough; some problems only show up at run time). The patches are applied with `git apply --3way`, which tolerates context drift. When upstream internal interfaces change, the fixes are all in `frontend/`. In a rehearsal against upstream master and the releases back to v10.0.0, the meson patch applied cleanly every time, and the frontend needed 0 lines for master, a few to about 25 lines per release (about 4 months), and about 90 lines for an 18-month gap. `0002` and `0003` change the same function, and `0003` is made on top of `0002`: when one of them is refreshed, regenerate `0003` from a tree with `0001` and `0002` applied. Once upstream has its own fix for the STREX alignment issue, delete `patches/0002-*.patch`; likewise `0003` for the exclusive monitor.
+Move the submodule to the new commit and run the full `cargo test` (a successful build is not enough; some problems only show up at run time). The patches are applied with `git apply --3way`, which tolerates context drift. When upstream internal interfaces change, the fixes are all in `frontend/`. In a rehearsal against upstream master and the releases back to v10.0.0, the meson patch applied cleanly every time, and the frontend needed 0 lines for master, a few to about 25 lines per release (about 4 months), and about 90 lines for an 18-month gap. `0002` and `0003` change the same function, and `0003` is made on top of `0002`: when one of them is refreshed, regenerate `0003` from a tree with `0001` and `0002` applied. Once upstream has its own fix for the STREX alignment issue, delete `patches/0002-*.patch`; likewise `0003` for the exclusive monitor and `0004` for the VSCCLRM assertion. `0004` changes a different file and does not depend on the others.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `qemu/` | Upstream QEMU submodule |
-| `patches/` | Changes to QEMU: the meson hook, the STREX alignment fix and the exclusive monitor fix |
+| `patches/` | Changes to QEMU: the meson hook, the STREX alignment fix, the exclusive monitor fix and the VSCCLRM fix |
 | `frontend/` | Oracle frontend (C); `win32/` and `host-win32.c` are the Windows-specific parts |
 | `include/armm_oracle.h` | C API |
 | `src/lib.rs`, `build.rs` | Rust wrapper and build |
 | `tests/` | Rust tests: build and loading (`s1`), execution (`s2`), memory faults (`s3`), per-class coverage (`s4_*`), the trait (`s8`) |
-| `scripts/s5_compare/` | Random comparison against gdbstub-driven `qemu-system-arm` (Python) |
+| `scripts/s5_compare/` | Random comparison against gdbstub-driven `qemu-system-arm` (Python); `vscclrm_check.py` checks VSCCLRM in Secure state against the pseudocode |
 | `scripts/s0-linux-user/` | M-profile experiment with upstream linux-user `qemu-arm` (WSL) |
 
 ## License

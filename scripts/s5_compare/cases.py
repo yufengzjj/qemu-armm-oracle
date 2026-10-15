@@ -408,11 +408,15 @@ def data_image(seed):
     return random.Random(f"data-{seed}").randbytes(DATA_SIZE)
 
 
-def generate(n, seed, batch=4000):
-    """Return n cases. Deterministic for a given (n, seed)."""
+def generate(n, seed, batch=4000, templates=None):
+    """Return n cases, from the given template names only if templates is set.
+    Deterministic for a given (n, seed, templates)."""
     rng = random.Random(seed)
-    names = [t for t, _ in TEMPLATES]
-    weights = [w for _, w in TEMPLATES]
+    use = [(t, w) for t, w in TEMPLATES if not templates or t in templates]
+    if not use:
+        raise ValueError(f"no such template: {templates}")
+    names = [t for t, _ in use]
+    weights = [w for _, w in use]
     cases = []
     while len(cases) < n:
         tmpls = rng.choices(names, weights, k=batch)

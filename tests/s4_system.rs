@@ -276,12 +276,23 @@ fn security_extension_in_non_secure_state() {
     run1(o, &[0xe97f, 0xe97f]);
     assert_eq!((o.get_r(0), o.get_r(15)), (0xdead, CODE + 4));
     // UNDEFINED in Non-secure state
+    for i in 0..16 {
+        o.set_d(i, 0x0101_0101_0101_0101 * (i as u64 + 1));
+    }
+    o.set_vpr(0x00f0_1234);
     for (code, what) in [
         (&[0xe841u16, 0xf080][..], "tta r0, r1"),
         (&[0xe841, 0xf0c0], "ttat r0, r1"),
         (&[0x4774], "bxns lr"),
         (&[0x4794], "blxns r2"),
         (&[0xec9f, 0x0a04], "vscclrm {s0-s3, vpr}"),
+        (&[0xec9f, 0x0a00], "vscclrm {vpr}"),
+        (&[0xec9f, 0x0b08], "vscclrm {d0-d3, vpr}"),
+        (&[0xec9f, 0xeb08], "vscclrm {d14-d17, vpr}"),
+        (&[0xecdf, 0x0b02], "vscclrm {d16, vpr}"),
+        (&[0xecdf, 0x1b02], "vscclrm {d17, vpr}"),
+        (&[0xecdf, 0x6b08], "vscclrm {d22-d25, vpr}"),
+        (&[0xecdf, 0x4b00], "vscclrm, D list from d20 with no registers"),
         (&[0xec20, 0x0a00], "vlstm r0"),
         (&[0xec30, 0x0a00], "vlldm r0"),
     ] {
@@ -289,6 +300,10 @@ fn security_extension_in_non_secure_state() {
         o.set_r(15, CODE);
         assert_eq!(fault_kind(o), FaultKind::Undefined, "{what}");
         assert_eq!(o.get_r(15), CODE);
+        for i in 0..16 {
+            assert_eq!(o.get_d(i), 0x0101_0101_0101_0101 * (i as u64 + 1), "{what}: d{i}");
+        }
+        assert_eq!(o.get_vpr(), 0x00f0_1234, "{what}: vpr");
     }
 }
 

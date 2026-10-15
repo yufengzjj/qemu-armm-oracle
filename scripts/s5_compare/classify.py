@@ -109,6 +109,9 @@ def classify(case, o, s, sn, diffs, privileged, secure, other_version=False):
         if x & ~0x9 == 0 and (secure or not x & 8) and (privileged or not x & 1):
             group = "; ".join(g for g, on in ((SECURE, secure), (PRIV, privileged)) if on)
             return group, "MRS CONTROL: SFPA (bit 3) exists only in Secure state, nPRIV (bit 0) is 1 in the oracle"
+    if mn == "mrs" and "control_ns" in tokens and fields == {rd_field} and secure:
+        return SECURE, ("MRS CONTROL_NS: unprivileged Secure code can read it (m_helper.c v7m_mrs); Non-secure "
+                        "code and the user-mode stub read 0")
     if "vpr" in tokens and mn in ("vmrs", "vmsr", "vldr", "vstr") and privileged:
         return PRIV, ("VPR access (VMRS/VMSR/VLDR/VSTR VPR) is a no-op when unprivileged; QEMU system mode "
                       "also keeps the reserved VPR bits on write")
@@ -121,6 +124,7 @@ def classify(case, o, s, sn, diffs, privileged, secure, other_version=False):
 def classify_harness_error(case, s):
     mn = case["text"].split()[0]
     if mn == "vscclrm" and "trans_VSCCLRM: assertion failed" in s["error"]:
-        return SECURE, ("QEMU bug: VSCCLRM whose D-register list starts at D16 or above aborts system-mode QEMU "
-                        "(assert in trans_VSCCLRM); in Non-secure user mode it is UNDEFINED before that code")
+        return SECURE, ("QEMU bug (fixed by patches/0004): VSCCLRM whose D-register list starts at D17 or above "
+                        "aborts system-mode QEMU (assert in trans_VSCCLRM); in Non-secure user mode it is UNDEFINED "
+                        "before that code")
     return "HARNESS", "harness error on the system side"

@@ -1,0 +1,12 @@
+diff --git a/target/arm/tcg/translate-m-nocp.c b/target/arm/tcg/translate-m-nocp.c
+index b92773b4af..8a1578f18d 100644
+--- a/target/arm/tcg/translate-m-nocp.c
++++ b/target/arm/tcg/translate-m-nocp.c
+@@ -163,6 +163,7 @@ static bool trans_VSCCLRM(DisasContext *s, arg_VSCCLRM *a)
+     /* Silently ignore requests to clear D16-D31 if they don't exist */
+     if (topreg > 31 && !dc_isar_feature(aa32_simd_r32, s)) {
+         topreg = 31;
++        btmreg = MIN(btmreg, 32);
+     }
+ 
+     if (!vfp_access_check(s)) {
