@@ -3,9 +3,11 @@
 //! the DLL is through `ARMM_ORACLE_DLL_DIR`.
 //!
 //! Nothing under the crate directory is written: QEMU is configured from a
-//! copy of its source tree in OUT_DIR (`qemu-src/`), made of directory
-//! junctions to the QEMU sources plus copies of their top-level files, with
-//! `patches/*.patch` applied to the copies and an `oracle` junction to
+//! copy of its source tree in OUT_DIR (`qemu-src/`). The top level and every
+//! directory on the path of a file that `patches/*.patch` touches are real
+//! directories holding copies of their files and junctions to their
+//! subdirectories; all other directories are junctions to the QEMU sources.
+//! The patches are applied to the copies only, and `oracle` is a junction to
 //! `frontend/`. Configure and build output go to `OUT_DIR/build`; the DLL and
 //! the MSYS2 runtime DLLs it needs go to `OUT_DIR/dist`.
 //!
@@ -287,7 +289,7 @@ fn slash(p: &Path) -> String {
 }
 
 /// Fill `src` with junctions to the submodule's directories and copies of
-/// its top-level files, the copies patched.
+/// its files, as described at the top of this file.
 fn make_source_tree(manifest: &Path, qemu: &Path, src: &Path, out: &Path) {
     let patched = apply_patches(manifest, qemu, out);
     let mut real_dirs: BTreeSet<PathBuf> = BTreeSet::new();
@@ -307,6 +309,10 @@ fn mirror(
     real_dirs: &BTreeSet<PathBuf>,
     patched: &[(PathBuf, Vec<u8>)],
 ) {
+    // A junction left by an earlier build: writing through it would change the QEMU sources.
+    if fs::symlink_metadata(to).is_ok_and(|m| m.file_type().is_symlink()) {
+        fs::remove_dir(to).unwrap();
+    }
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
@@ -322,7 +328,11 @@ fn mirror(
         let r = rel.join(&name);
         let (src, dst) = (entry.path(), to.join(&name));
         if entry.file_type().unwrap().is_dir() || src.is_dir() {
-            if real_dirs.contains(&r) {
+            // A real directory stays real: a junction back could show sources older than
+            // their objects, which ninja would not rebuild. Under subprojects/ it is a meson download.
+            let was_real = rel != Path::new("subprojects")
+                && fs::symlink_metadata(&dst).is_ok_and(|m| m.is_dir());
+            if real_dirs.contains(&r) || was_real {
                 mirror(&src, &dst, &r, real_dirs, patched);
             } else {
                 ensure_junction(&dst, &src);
@@ -378,10 +388,20 @@ fn apply_patches(manifest: &Path, qemu: &Path, out: &Path) -> Vec<(PathBuf, Vec<
         .collect();
     patches.sort();
     let mut touched: BTreeSet<PathBuf> = BTreeSet::new();
-    for p in &patches {
-        for line in fs::read_to_string(p).unwrap().lines() {
-            if let Some(path) = line.strip_prefix("+++ b/") {
-                touched.insert(PathBuf::from(path.trim_end()));
+    if !patches.is_empty() {
+        let o = Command::new("git")
+            .current_dir(out)
+            .env("GIT_CEILING_DIRECTORIES", out)
+            .args(["apply", "--numstat", "-z"])
+            .args(&patches)
+            .output()
+            .unwrap_or_else(|e| fail(&format!("cannot run git (install Git for Windows or MSYS2's git): {e}")));
+        if !o.status.success() {
+            fail(&format!("git apply --numstat failed:\n{}", String::from_utf8_lossy(&o.stderr)));
+        }
+        for rec in String::from_utf8_lossy(&o.stdout).split('\0') {
+            if let Some(path) = rec.splitn(3, '\t').nth(2).filter(|p| !p.is_empty()) {
+                touched.insert(PathBuf::from(path));
             }
         }
     }
@@ -402,7 +422,8 @@ fn apply_patches(manifest: &Path, qemu: &Path, out: &Path) -> Vec<(PathBuf, Vec<
             Command::new("git")
                 .current_dir(&stage)
                 .env("GIT_CEILING_DIRECTORIES", out)
-                .arg("apply")
+                // Outside a repository git apply still follows a global core.autocrlf=true and writes CRLF.
+                .args(["-c", "core.autocrlf=false", "apply"])
                 .args(extra)
                 .args(["-C2", "--whitespace=nowarn"])
                 .arg(p)

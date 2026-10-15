@@ -24,10 +24,12 @@ Status: verified (see [Verification](#verification)). Only Windows hosts are sup
 
 ## How it works
 
-- QEMU is a git submodule (`qemu/`, pinned at `8ee6c77`, 11.1.50). Its **sources are not changed**; this project only adds files.
+- QEMU is a git submodule (`qemu/`, pinned at `8ee6c77`, 11.1.50). Apart from the two small patches in `patches/`, its **sources are not changed**; this project only adds files.
 - `frontend/` is a new frontend modelled on QEMU's linux-user (user mode), but without syscalls, ELF loading or signals. It builds `target/arm`, TCG and the user-mode part of `accel/tcg` into one DLL, with the CPU model `cortex-m55`.
 - Guest memory is a flat 4 GB address window; pages are mapped as each test case needs them. Accesses to unmapped pages are caught by a Windows vectored exception handler (VEH) and turned into guest data aborts; the process does not crash.
-- The only change to upstream is the one in `patches/`: 5 lines added to `meson.build` to hook `frontend/` into QEMU's build.
+- The changes to upstream are the patches in `patches/`, applied in order:
+  - `0001`: 5 lines added to `meson.build` to hook `frontend/` into QEMU's build.
+  - `0002`: a fix in `target/arm/tcg/translate.c` so that an unaligned STREX always raises an alignment fault (the first of the [known QEMU issues](#known-qemu-issues)).
 - `include/armm_oracle.h` is the C API. `src/lib.rs` is the Rust wrapper (`ArmMOracle` trait, `Oracle`, `StepOutcome`, `FaultKind`, `CpuState`).
 
 ## Semantic contract
@@ -63,13 +65,13 @@ The raw step result (`step_raw`) still carries QEMU's FSR value, which tells unm
 
 ### Known QEMU issues
 
-- An unaligned STREX does not raise an alignment fault when the exclusive monitor does not match the address; it just returns 1 (store failed). The architecture requires an UNALIGNED UsageFault (`ExclusiveMonitorsPass`). Cause: `gen_store_exclusive` in `target/arm/tcg/translate.c`; system mode has the same bug.
+- Fixed here by `patches/0002-unaligned-strex-fault.patch`: in upstream QEMU, an unaligned STREX/STREXH (and STLEX/STLEXH) does not raise an alignment fault when the exclusive monitor does not match the address; it just returns 1 (store failed). The architecture requires an UNALIGNED UsageFault (`ExclusiveMonitorsPass` checks alignment first). Cause: `gen_store_exclusive` in `target/arm/tcg/translate.c`, so upstream system mode and linux-user have the same bug. The patch checks the alignment before the monitor and raises the fault as a store; `tests/s4_strex_align.rs` covers it.
 - STREX success is decided by comparing the memory value: a plain store of a different value between LDREX and STREX makes it fail, the same value lets it succeed. Real implementations do not decide by data. Avoid such cases.
 - System mode only: a Secure VSCCLRM whose D-register list starts at D17 or above hits an assertion in `trans_VSCCLRM` (`target/arm/tcg/translate-m-nocp.c`) and QEMU exits. The oracle is Non-secure, so VSCCLRM is UNDEFINED before that code runs.
 
 ## Verification
 
-- **Coverage**: about 200 instructions in 54 tests, with expected values worked out by hand from the DDI0553 pseudocode: T16/T32 including IT blocks; DSP; scalar floating point in single, double and half precision (rounding modes, FZ, FZ16, DN, AHP, cumulative flags); MVE integer and floating point, VPT predication and ECI beat skipping; low-overhead loops including tail predication. QEMU matched the architecture in all of them.
+- **Coverage**: about 200 instructions in 57 tests, with expected values worked out by hand from the DDI0553 pseudocode: T16/T32 including IT blocks; DSP; scalar floating point in single, double and half precision (rounding modes, FZ, FZ16, DN, AHP, cumulative flags); MVE integer and floating point, VPT predication and ECI beat skipping; low-overhead loops including tail predication. QEMU matched the architecture in all of them.
 - **Comparison**: about 59,000 random cases against gdbstub-driven `qemu-system-arm` (`mps3-an547`, same QEMU commit, set to Non-secure unprivileged with FPCA = 1). The only difference is single-stepping YIELD through gdbstub, which also runs the next instruction. Run in Secure or privileged state instead, every difference traces back to the user-mode stand-ins above.
 - **Faults**: 400,000 mixed cases including memory faults ran without a crash, with memory use steady at about 20 MB.
 - **Speed**: about 3 µs per case from Rust (set the state, execute one instruction, read it back), against 0.14–2 ms through gdbstub.
@@ -117,14 +119,14 @@ qemu-armm-oracle = { git = "https://github.com/yufengzjj/qemu-armm-oracle.git" }
 
 ## Following upstream QEMU
 
-Move the submodule to the new commit and run the full `cargo test` (a successful build is not enough; some problems only show up at run time). The patch is applied with `git apply --3way`, which tolerates context drift. When upstream internal interfaces change, the fixes are all in `frontend/`. In a rehearsal against upstream master and the releases back to v10.0.0, the patch applied cleanly every time, and the frontend needed 0 lines for master, a few to about 25 lines per release (about 4 months), and about 90 lines for an 18-month gap.
+Move the submodule to the new commit and run the full `cargo test` (a successful build is not enough; some problems only show up at run time). The patches are applied with `git apply --3way`, which tolerates context drift. When upstream internal interfaces change, the fixes are all in `frontend/`. In a rehearsal against upstream master and the releases back to v10.0.0, the meson patch applied cleanly every time, and the frontend needed 0 lines for master, a few to about 25 lines per release (about 4 months), and about 90 lines for an 18-month gap. Once upstream has its own fix for the STREX alignment issue, delete `patches/0002-*.patch`.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `qemu/` | Upstream QEMU submodule |
-| `patches/` | Changes to QEMU (only the meson hook) |
+| `patches/` | Changes to QEMU: the meson hook and the STREX alignment fix |
 | `frontend/` | Oracle frontend (C); `win32/` and `host-win32.c` are the Windows-specific parts |
 | `include/armm_oracle.h` | C API |
 | `src/lib.rs`, `build.rs` | Rust wrapper and build |

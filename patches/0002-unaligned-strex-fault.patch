@@ -1,0 +1,26 @@
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 6983153ffc..02693d6271 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -2097,6 +2097,21 @@ static void gen_store_exclusive(DisasContext *s, int rd, int rt, int rt2,
+        } */
+     fail_label = gen_new_label();
+     done_label = gen_new_label();
++
++    if (size != MO_8) {
++        TCGLabel *aligned_label = gen_new_label();
++
++        /*
++         * ExclusiveMonitorsPass() checks alignment before the monitor:
++         * this store always takes the alignment fault and never writes.
++         */
++        tcg_gen_brcondi_i32(TCG_COND_TSTEQ, addr, (1 << size) - 1,
++                            aligned_label);
++        tcg_gen_qemu_st_i64(tcg_constant_i64(0), gen_aa32_addr(s, addr, opc),
++                            get_mem_index(s), opc);
++        gen_set_label(aligned_label);
++    }
++
+     extaddr = tcg_temp_new_i64();
+     tcg_gen_extu_i32_i64(extaddr, addr);
+     tcg_gen_brcond_i64(TCG_COND_NE, extaddr, cpu_exclusive_addr, fail_label);

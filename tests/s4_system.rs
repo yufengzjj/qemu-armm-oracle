@@ -245,15 +245,15 @@ fn exclusive_monitor_qemu_limits() {
         assert_eq!(o.get_r(2), result, "plain store of {stored:#x} in between");
     }
 
-    // QEMU bug (gen_store_exclusive): an unaligned STREX must be an
-    // UNALIGNED UsageFault (ExclusiveMonitorsPass), but QEMU only checks
-    // alignment when the marked address matches.
+    // An unaligned STREX is an UNALIGNED UsageFault whatever the monitor
+    // state (ExclusiveMonitorsPass); more cases in s4_strex_align.rs.
     o.set_r(1, DATA + 0x12);
     o.set_r(2, 0xdead);
-    run1(o, &strex);
-    assert_eq!(o.get_r(2), 1, "QEMU: no fault, STREX just fails");
-    o.set_exclusive(Some((DATA + 0x12, 4))).unwrap();
+    o.write_mem(CODE, &thumb(&strex)).unwrap();
     o.set_r(15, CODE);
+    assert_eq!(fault_kind(o), FaultKind::Unaligned { addr: DATA + 0x12 }, "monitor closed: fault");
+    assert_eq!((o.get_r(2), o.get_r(15)), (0xdead, CODE));
+    o.set_exclusive(Some((DATA + 0x12, 4))).unwrap();
     assert_eq!(fault_kind(o), FaultKind::Unaligned { addr: DATA + 0x12 }, "marked address matches: fault");
 }
 
