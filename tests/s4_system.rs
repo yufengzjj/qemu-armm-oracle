@@ -357,6 +357,38 @@ fn hints() {
 }
 
 #[test]
+fn preload_hints() {
+    // PLD, PLDW and PLI change no state and do not access memory (C2.4.140,
+    // C2.4.141, C2.4.142). QEMU needs patches/0007-m-profile-pldw-hint.patch
+    // for PLDW, which it otherwise runs as LDRH with Rt = 15.
+    let mut f = fixture();
+    let o = setup(&mut f);
+    o.write_mem(DATA + 0x35e, &[0x35, 0x12]).unwrap();
+    let unmapped = 0x0010_0000;
+    for target in [DATA + 0x35e, unmapped + 0x35e] {
+        for (code, what, r0, r1) in [
+            ([0xf890u16, 0xf25e], "pld [r0, #0x25e]", target - 0x25e, 0),
+            ([0xf810, 0xf021], "pld [r0, r1, lsl #2]", target - 0x25c, 0x97),
+            ([0xf8b0, 0xf25e], "pldw [r0, #0x25e]", target - 0x25e, 0),
+            ([0xf830, 0xfc08], "pldw [r0, #-8]", target + 8, 0),
+            ([0xf830, 0xf021], "pldw [r0, r1, lsl #2]", target - 0x25c, 0x97),
+            ([0xf990, 0xf25e], "pli [r0, #0x25e]", target - 0x25e, 0),
+        ] {
+            o.set_r(0, r0);
+            o.set_r(1, r1);
+            o.set_xpsr(XPSR_T);
+            run1(o, &code);
+            assert_eq!(
+                [o.get_r(0), o.get_r(1), o.get_r(15), o.get_xpsr()],
+                [r0, r1, CODE + 4, XPSR_T],
+                "{what} at {target:#x}"
+            );
+        }
+    }
+    assert_eq!(o.read_mem(DATA + 0x35e, 2).unwrap(), [0x35, 0x12]);
+}
+
+#[test]
 fn fault_kinds() {
     let mut f = fixture();
     let o = setup(&mut f);

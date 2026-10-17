@@ -1,0 +1,14 @@
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 158e22a076..6f914d9bc6 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -6099,7 +6099,8 @@ static bool trans_PLD(DisasContext *s, arg_PLD *a)
+ 
+ static bool trans_PLDW(DisasContext *s, arg_PLDW *a)
+ {
+-    return arm_dc_feature(s, ARM_FEATURE_V7MP);
++    return arm_dc_feature(s, ARM_FEATURE_V7MP) ||
++           arm_dc_feature(s, ARM_FEATURE_M_MAIN);
+ }
+ 
+ static bool trans_PLI(DisasContext *s, arg_PLI *a)
