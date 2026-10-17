@@ -468,3 +468,72 @@ fn scalar_long_shifts() {
     assert_eq!(o.get_r(0), 0xffff_ffff);
     assert_eq!(o.get_xpsr(), XPSR_T | FLAG_Q);
 }
+
+/// SQRSHRL (`signed`, right by `amount`) or UQRSHLL (left by `amount`)
+/// as in the DDI0553B.z operation; returns the result and whether it saturated.
+fn rounding_long_shift(signed: bool, sat_to: u32, input: u64, amount: i8) -> (u64, bool) {
+    let left = if signed { -(amount as i32) } else { amount as i32 };
+    let shifted: i128 = {
+        let op = if signed { input as i64 as i128 } else { input as i128 };
+        if left < 0 {
+            let k = (-left).min(70);
+            (op + (1i128 << (k - 1))) >> k
+        } else if op == 0 || left < 64 {
+            op << left
+        } else {
+            op.signum() << 64
+        }
+    };
+    let (min, max) = if signed { (-(1i128 << (sat_to - 1)), (1i128 << (sat_to - 1)) - 1) } else { (0, (1i128 << sat_to) - 1) };
+    let r = shifted.clamp(min, max);
+    (r as u64, r != shifted)
+}
+
+fn run_long_shift(o: &mut Oracle, code: [u16; 2], input: u64, amount: i8) -> (u64, bool) {
+    o.set_xpsr(XPSR_T);
+    o.set_r(0, input as u32);
+    o.set_r(1, (input >> 32) as u32);
+    o.set_r(2, amount as u8 as u32);
+    run1(o, &code);
+    let xpsr = o.get_xpsr();
+    assert_eq!(xpsr & !FLAG_Q, XPSR_T);
+    ((o.get_r(1) as u64) << 32 | o.get_r(0) as u64, xpsr & FLAG_Q != 0)
+}
+
+#[test]
+fn long_shifts_saturating_to_48_bits() {
+    let mut f = fixture();
+    let o = setup(&mut f);
+    const SQRSHRL48: [u16; 2] = [0xea51, 0x21ad]; // sqrshrl r0, r1, #48, r2
+    const UQRSHLL48: [u16; 2] = [0xea51, 0x218d]; // uqrshll r0, r1, #48, r2
+    const SQRSHRL64: [u16; 2] = [0xea51, 0x212d];
+    const UQRSHLL64: [u16; 2] = [0xea51, 0x210d];
+    for (code, input, amount, expected, q) in [
+        (SQRSHRL48, 1u64 << 62, 50i8, 0x1000u64, false),
+        (SQRSHRL48, 1 << 63, 63, u64::MAX, false),
+        (SQRSHRL48, 1 << 63, 64, 0, false),
+        (SQRSHRL48, 1 << 62, 15, 0x7fff_ffff_ffff, true),
+        (UQRSHLL48, 1 << 63, -49, 0x4000, false),
+        (UQRSHLL48, u64::MAX, -64, 1, false),
+        (UQRSHLL48, u64::MAX, -65, 0, false),
+        (UQRSHLL48, 1 << 63, -14, 0xffff_ffff_ffff, true),
+    ] {
+        let signed = code == SQRSHRL48;
+        assert_eq!(rounding_long_shift(signed, 48, input, amount), (expected, q), "model");
+        assert_eq!(run_long_shift(o, code, input, amount), (expected, q), "{code:04x?} {input:#x} by {amount}");
+    }
+
+    let mut rng = Rng(0x5eed_48_64);
+    for _ in 0..4000 {
+        let (code, signed, sat_to) = [(SQRSHRL48, true, 48), (UQRSHLL48, false, 48), (SQRSHRL64, true, 64), (UQRSHLL64, false, 64)]
+            [rng.below(4) as usize];
+        let input = rng.next() >> rng.below(64);
+        let input = if rng.below(2) == 0 { input } else { input.wrapping_neg() };
+        let amount = rng.u32() as i8;
+        assert_eq!(
+            run_long_shift(o, code, input, amount),
+            rounding_long_shift(signed, sat_to, input, amount),
+            "{code:04x?} {input:#x} by {amount}"
+        );
+    }
+}

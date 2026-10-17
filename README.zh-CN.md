@@ -24,7 +24,7 @@ movs(&mut o);
 
 ## 怎么做的
 
-- QEMU 是 git 子模块（`qemu/`，钉在 `8ee6c77`，11.1.50），除了 `patches/` 里四个小补丁，**源码不改**，只加文件。
+- QEMU 是 git 子模块（`qemu/`，钉在 `8ee6c77`，11.1.50），除了 `patches/` 里五个小补丁，**源码不改**，只加文件。
 - `frontend/` 是新写的前端：仿照 QEMU 的 linux-user（用户态），但没有系统调用、ELF 加载和信号。它把 `target/arm`、TCG 和 `accel/tcg` 的用户态部分编进一个 DLL，CPU 用 `cortex-m55`。
 - 客户机内存是一块 4 GB 的平坦地址窗口，用例要用的页再映射。访问没映射的页由 Windows 的向量化异常处理（VEH）接住，转成客户机的数据异常，进程不崩。
 - 对上游的改动就是 `patches/` 里的补丁，按顺序打：
@@ -32,6 +32,7 @@ movs(&mut o);
   - `0002`：修 `target/arm/tcg/translate.c`，让地址不对齐的 STREX 总是报对齐错误（[已知的 QEMU 问题](#已知的-qemu-问题)第一条）。
   - `0003`：修同一个函数，让普通存储不改变独占监视器（已知的 QEMU 问题第二条）；另外在 `linux-user/arm/` 里加两行，oracle 不编这部分。
   - `0004`：在 `target/arm/tcg/translate-m-nocp.c` 加一行，让安全状态下 D 寄存器列表从 D17 以上开始的 VSCCLRM 只清 VPR，不再断言失败（已知的 QEMU 问题第三条）。只改变系统模式；oracle 是非安全状态，VSCCLRM 是 UNDEFINED。
+  - `0005`：改 `target/arm/tcg/mve_helper.c` 里的两个界限，让 `#48` 形式的 SQRSHRL 和 UQRSHLL 右移 48 到 64 位时结果正确（已知的 QEMU 问题第四条）。
 - `include/armm_oracle.h` 是 C 接口，`src/lib.rs` 是 Rust 封装（`ArmMOracle` trait、`Oracle`、`StepOutcome`、`FaultKind`、`CpuState`）。
 
 ## 语义约定
@@ -70,10 +71,11 @@ movs(&mut o);
 - 本项目已用 `patches/0002-unaligned-strex-fault.patch` 修复：上游 QEMU 里，地址不对齐的 STREX/STREXH（以及 STLEX/STLEXH）在独占监视器和地址不匹配时不报对齐错误，只返回 1（存储失败）。按架构应当是 UNALIGNED UsageFault（`ExclusiveMonitorsPass` 先查对齐）。原因在 `target/arm/tcg/translate.c` 的 `gen_store_exclusive`，所以上游的系统模式和 linux-user 也一样。补丁在检查监视器之前先查对齐，按存储报错；`tests/s4_exclusive.rs` 覆盖这一条。
 - 本项目已用 `patches/0003-plain-store-keeps-exclusive-monitor.patch` 修复：上游 QEMU 里，STREX 是否成功按内存是否还等于 LDREX 读到的值判断，所以 LDREX 和 STREX 之间普通存储写了不同的值，STREX 失败；写了相同的值，STREX 成功。架构把"同一个核不是 Store-Exclusive 的存储是否改变本地监视器"定为 IMPLEMENTATION DEFINED（DDI0553 B9.2），但真实实现不会按数据决定。Cortex-M55 不改变监视器（Cortex-M55 TRM 的 "Internal local exclusive access monitor"）。补丁让 QEMU 也这样：**同一个核的普通存储不改变本地监视器**，STREX 到标记的地址时执行存储并返回 0。这只用于只有一个线程的用户态（翻译时没有 `CF_PARALLEL`），oracle 总是这种情况。有多个线程时，以及系统模式下（轮转式 TCG 在一个线程里跑多个 vCPU），QEMU 保留比较值的做法，用它代替全局监视器；所以 `qemu-system-arm` 仍是原来的行为。对 linux-user，补丁还在系统调用和投递信号时清除监视器，和 Linux 每次返回用户态时一样。`tests/s4_exclusive.rs` 覆盖这一条；STREX 的访存错误现在也按存储报。
 - 本项目已用 `patches/0004-vscclrm-unimplemented-dregs.patch` 修复（只影响系统模式）：上游 QEMU 里，安全状态下 D 寄存器列表从 D17 以上开始的 VSCCLRM（例如 `vscclrm {d17, vpr}`）会在 `trans_VSCCLRM`（`target/arm/tcg/translate-m-nocp.c`）里断言失败，QEMU 退出。按架构，只有 16 个 D 寄存器的处理器上，D15 以上的寄存器不动（VSCCLRM 的操作伪代码跳过它们，DDI0553 B4.3 也规定 VSCCLRM 对没有实现的 S、D 寄存器相当于 NOP），所以这样的列表只清 VPR。补丁就这样做。oracle 是非安全状态，执行到这段代码之前就判为 UNDEFINED，结果不变；`scripts/s5_compare/vscclrm_check.py` 在安全状态下用打了补丁的 `qemu-system-arm` 检查这个修复。
+- 本项目已用 `patches/0005-mve-48bit-long-shift-right.patch` 修复：上游 QEMU 里，`sqrshrl RdaLo, RdaHi, #48, Rm` 右移 48 到 63 位、`uqrshll RdaLo, RdaHi, #48, Rm` 右移 49 到 64 位（Rm 的低字节为负）时，结果总是 0。按架构，先对整个 64 位的 RdaHi:RdaLo 做带舍入的移位，再饱和到 48 位，所以输入在第 47 位以上有有效位时结果不是 0：例如 2^62 右移 50 位得 4096，2^63 右移 49 位（无符号）得 16384。原因：`do_sqrshl48_d` 和 `do_uqrshl48_d` 在移位数达到 `-48`、`-(48 + round)` 时提前返回 0，这只对能放进 48 位的输入成立；补丁改用 64 位版本的界限（`-64`、`-(64 + round)`）。系统模式也有这个问题。`tests/s4_mve.rs` 覆盖这一条，包括 `#48` 和 `#64` 形式共 4000 个和伪代码模型对照的随机用例。
 
 ## 验证
 
-- **覆盖**：约 200 条指令、64 个测试，预期值按 DDI0553 伪代码手算：T16/T32（含 IT 块）；DSP；单、双、半精度标量浮点（舍入模式、FZ、FZ16、DN、AHP、累积异常标志）；MVE 整数和浮点、VPT 谓词、按 ECI 跳过的 beat；低开销循环（含尾部谓词）。QEMU 全部和架构一致。
+- **覆盖**：约 200 条指令、65 个测试，预期值按 DDI0553 伪代码手算：T16/T32（含 IT 块）；DSP；单、双、半精度标量浮点（舍入模式、FZ、FZ16、DN、AHP、累积异常标志）；MVE 整数和浮点、VPT 谓词、按 ECI 跳过的 beat；低开销循环（含尾部谓词）。除了上面已知的 QEMU 问题，QEMU 全部和架构一致。
 - **对照**：约 5.9 万个随机用例，和 gdbstub 驱动的 `qemu-system-arm`（`mps3-an547`，同一个 QEMU 提交，设成非安全、非特权、FPCA = 1）对照。唯一的差异是经 gdbstub 单步 YIELD 时会多执行下一条。改成安全状态或特权模式时，所有差异都能归到上面的用户态替身。
 - **访存错误**：40 万个混合用例（含访存错误）不崩，内存稳定在约 20 MB。
 - **速度**：Rust 直接调用每例约 3 µs（设状态、执行一条、读回），gdbstub 要 0.14–2 ms。
@@ -121,14 +123,14 @@ qemu-armm-oracle = { git = "https://github.com/yufengzjj/qemu-armm-oracle.git" }
 
 ## 跟进上游 QEMU
 
-换子模块的提交，跑一遍 `cargo test`（只编过不够，有的问题运行时才出现）。补丁用 `git apply --3way` 打，上下文有变化也能打上。上游内部接口变了的话，要改的都在 `frontend/` 里。对上游 master 和往前直到 v10.0.0 的各个版本做过演练：meson 补丁每次都能干净地打上；前端跟到 master 改 0 行，每落后一个版本（约 4 个月）几行到二十几行，落后 18 个月约 90 行。`0002` 和 `0003` 改的是同一个函数，`0003` 是在 `0002` 之上做的：其中一个更新后，要在打了 `0001` 和 `0002` 的源码树上重新生成 `0003`。上游自己修好 STREX 对齐问题以后，删掉 `patches/0002-*.patch`；独占监视器的问题修好以后，同样删掉 `0003`；VSCCLRM 断言的问题修好以后删掉 `0004`。`0004` 改的是另一个文件，不依赖其他补丁。
+换子模块的提交，跑一遍 `cargo test`（只编过不够，有的问题运行时才出现）。补丁用 `git apply --3way` 打，上下文有变化也能打上。上游内部接口变了的话，要改的都在 `frontend/` 里。对上游 master 和往前直到 v10.0.0 的各个版本做过演练：meson 补丁每次都能干净地打上；前端跟到 master 改 0 行，每落后一个版本（约 4 个月）几行到二十几行，落后 18 个月约 90 行。`0002` 和 `0003` 改的是同一个函数，`0003` 是在 `0002` 之上做的：其中一个更新后，要在打了 `0001` 和 `0002` 的源码树上重新生成 `0003`。上游自己修好 STREX 对齐问题以后，删掉 `patches/0002-*.patch`；独占监视器的问题修好以后，同样删掉 `0003`；VSCCLRM 断言的问题修好以后删掉 `0004`；48 位长移位的问题修好以后删掉 `0005`。`0004` 和 `0005` 各改一个别的文件，不依赖其他补丁。
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
 | `qemu/` | 上游 QEMU 子模块 |
-| `patches/` | 对 QEMU 的改动：meson 钩子、STREX 对齐修复、独占监视器修复和 VSCCLRM 修复 |
+| `patches/` | 对 QEMU 的改动：meson 钩子、STREX 对齐修复、独占监视器修复、VSCCLRM 修复和 48 位长移位修复 |
 | `frontend/` | oracle 前端（C），`win32/` 和 `host-win32.c` 是 Windows 专用的部分 |
 | `include/armm_oracle.h` | C 接口 |
 | `src/lib.rs`、`build.rs` | Rust 封装和构建 |

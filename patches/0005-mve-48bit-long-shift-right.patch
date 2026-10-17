@@ -1,0 +1,22 @@
+diff --git a/target/arm/tcg/mve_helper.c b/target/arm/tcg/mve_helper.c
+index 09ae233416..8c20b5584b 100644
+--- a/target/arm/tcg/mve_helper.c
++++ b/target/arm/tcg/mve_helper.c
+@@ -2476,7 +2476,7 @@ static inline int64_t do_sqrshl48_d(int64_t src, int64_t shift,
+ {
+     int64_t val, extval;
+ 
+-    if (shift <= -48) {
++    if (shift <= -64) {
+         /* Rounding the sign bit always produces 0. */
+         if (round) {
+             return 0;
+@@ -2512,7 +2512,7 @@ static inline uint64_t do_uqrshl48_d(uint64_t src, int64_t shift,
+ {
+     uint64_t val, extval;
+ 
+-    if (shift <= -(48 + round)) {
++    if (shift <= -(64 + round)) {
+         return 0;
+     } else if (shift < 0) {
+         if (round) {
