@@ -12,6 +12,11 @@
 //! the pseudocode store path only clears the global monitor of other PEs.
 //! QEMU needs patches/0003-plain-store-keeps-exclusive-monitor.patch:
 //! without it STREX compares memory with the value LDREX read.
+//!
+//! Doubleword exclusives: Armv8-M has no LDREXD, STREXD, LDAEXD or STLEXD
+//! (sz = 11 is missing from the T32 encoding tables). QEMU needs
+//! patches/0006-m-profile-no-doubleword-exclusives.patch to make them
+//! UNDEFINED; without it they run as on A-profile.
 
 mod common;
 use common::*;
@@ -365,4 +370,36 @@ fn strex_memory_fault_is_a_store() {
         }
     }
     assert_eq!(o.read_mem(read_only, 4).unwrap(), [0; 4], "read-only page unchanged");
+}
+
+#[test]
+fn doubleword_exclusives_are_undefined() {
+    let mut f = fixture();
+    let o = &mut f.o;
+    load(o, &thumb(&[0xbf00]));
+    for (code, what) in [
+        ([0xe8d1, 0x237f], "ldrexd r2, r3, [r1]"),
+        ([0xe8d1, 0x23ff], "ldaexd r2, r3, [r1]"),
+        ([0xe8c1, 0x2374], "strexd r4, r2, r3, [r1]"),
+        ([0xe8c1, 0x23f4], "stlexd r4, r2, r3, [r1]"),
+    ] {
+        o.write_mem(BASE, &FILL).unwrap();
+        o.set_exclusive(Some((BASE, 4))).unwrap();
+        o.set_r(1, BASE);
+        o.set_r(2, 0x2222_2222);
+        o.set_r(3, 0x3333_3333);
+        o.set_r(4, 0x4444_4444);
+        o.write_mem(CODE, &thumb(&code)).unwrap();
+        o.set_r(15, CODE);
+        match outcome(&o.step_raw()) {
+            StepOutcome::Fault { kind, .. } => assert_eq!(kind, FaultKind::Undefined, "{what}"),
+            StepOutcome::Retired => panic!("{what}: retired"),
+        }
+        assert_eq!(
+            [o.get_r(2), o.get_r(3), o.get_r(4), o.get_r(15)],
+            [0x2222_2222, 0x3333_3333, 0x4444_4444, CODE],
+            "{what}"
+        );
+        assert_eq!(o.read_mem(BASE, 16).unwrap(), FILL, "{what}: memory unchanged");
+    }
 }

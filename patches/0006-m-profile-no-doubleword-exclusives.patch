@@ -1,0 +1,42 @@
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 8f7f465834..158e22a076 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -4248,6 +4248,9 @@ static bool trans_STREXD_a32(DisasContext *s, arg_STREX *a)
+ 
+ static bool trans_STREXD_t32(DisasContext *s, arg_STREX *a)
+ {
++    if (arm_dc_feature(s, ARM_FEATURE_M)) {
++        return false;
++    }
+     return op_strex(s, a, MO_64, false);
+ }
+ 
+@@ -4291,7 +4294,7 @@ static bool trans_STLEXD_a32(DisasContext *s, arg_STREX *a)
+ 
+ static bool trans_STLEXD_t32(DisasContext *s, arg_STREX *a)
+ {
+-    if (!ENABLE_ARCH_8) {
++    if (!ENABLE_ARCH_8 || arm_dc_feature(s, ARM_FEATURE_M)) {
+         return false;
+     }
+     return op_strex(s, a, MO_64, true);
+@@ -4402,6 +4405,9 @@ static bool trans_LDREXD_a32(DisasContext *s, arg_LDREX *a)
+ 
+ static bool trans_LDREXD_t32(DisasContext *s, arg_LDREX *a)
+ {
++    if (arm_dc_feature(s, ARM_FEATURE_M)) {
++        return false;
++    }
+     return op_ldrex(s, a, MO_64, false);
+ }
+ 
+@@ -4445,7 +4451,7 @@ static bool trans_LDAEXD_a32(DisasContext *s, arg_LDREX *a)
+ 
+ static bool trans_LDAEXD_t32(DisasContext *s, arg_LDREX *a)
+ {
+-    if (!ENABLE_ARCH_8) {
++    if (!ENABLE_ARCH_8 || arm_dc_feature(s, ARM_FEATURE_M)) {
+         return false;
+     }
+     return op_ldrex(s, a, MO_64, true);
